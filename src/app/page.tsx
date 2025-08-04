@@ -316,12 +316,8 @@ function UploadSection({
       const formData = new FormData();
       formData.append('file', file);
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-      if (!apiUrl) {
-        throw new Error('API URL is not configured');
-      }
-
-      const response = await fetch(`${apiUrl}/upload`, {
+      // Use the proxy endpoint instead of direct backend URL
+      const response = await fetch('/api/proxy', {
         method: 'POST',
         body: formData,
       });
