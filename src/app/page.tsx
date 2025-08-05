@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface Finding {
   type: string;
@@ -42,6 +42,24 @@ interface ProcessedFile {
   status: 'success' | 'error';
   findings: number;
   documentId?: string;
+}
+
+interface Document {
+  document_id: string;
+  filename: string;
+  upload_timestamp: string;
+  content_length: number;
+  sensitive_info_count: number;
+  email_count: number;
+  ssn_count: number;
+}
+
+interface DocumentsResponse {
+  total: number;
+  offset: number;
+  limit: number;
+  documents: Document[];
+  api_version: string;
 }
 
 function SeverityBadge({ severity }: { severity?: string }) {
@@ -218,66 +236,263 @@ function ProcessedFilesTable({
   files: ProcessedFile[];
   onSelectFile: (file: ProcessedFile) => void;
 }) {
+  const [documents, setDocuments] = useState<DocumentsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  useEffect(() => {
+    fetchDocuments();
+  }, [currentPage, pageSize]);
+
+  const fetchDocuments = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const offset = (currentPage - 1) * pageSize;
+      const response = await fetch(`/api/documents?offset=${offset}&limit=${pageSize}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      setDocuments(data);
+    } catch (err) {
+      console.error('Error fetching documents:', err);
+      setError('Failed to fetch documents. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const totalPages = documents ? Math.ceil(documents.total / pageSize) : 0;
+  const startItem = documents ? (currentPage - 1) * pageSize + 1 : 0;
+  const endItem = documents ? Math.min(currentPage * pageSize, documents.total) : 0;
+
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+  };
+
+  const handlePageSizeChange = (newPageSize: number) => {
+    setPageSize(newPageSize);
+    setCurrentPage(1); // Reset to first page when changing page size
+  };
+
+  if (loading) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4 h-full">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-white">Processed Documents</h2>
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-indigo-400"></div>
+        </div>
+        <div className="flex items-center justify-center h-32">
+          <div className="text-gray-400">Loading documents...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4 h-full">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-white">Processed Documents</h2>
+          <button
+            onClick={fetchDocuments}
+            className="text-indigo-400 hover:text-indigo-300 text-sm"
+          >
+            Refresh
+          </button>
+        </div>
+        <div className="text-red-400 text-center py-8">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-gray-800 rounded-lg p-4 h-full">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-white">Processed Files</h2>
-        <span className="text-sm text-gray-400">
-          Total: {files.length}
-        </span>
+        <h2 className="text-lg font-semibold text-white">Processed Documents</h2>
+        <div className="flex items-center space-x-3">
+          <span className="text-sm text-gray-400">
+            {documents && documents.total > 0 ? (
+              `Showing ${startItem}-${endItem} of ${documents.total}`
+            ) : (
+              `Total: ${documents?.total || 0}`
+            )}
+          </span>
+          <button
+            onClick={fetchDocuments}
+            className="text-indigo-400 hover:text-indigo-300 text-sm"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
       
-      {files.length === 0 ? (
+      {!documents || documents.documents.length === 0 ? (
         <div className="text-center py-8 text-gray-400">
-          No files processed yet
+          No documents found
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full">
-            <thead>
-              <tr className="border-b border-gray-700">
-                <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">File Name</th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Time</th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Status</th>
-                <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Findings</th>
-              </tr>
-            </thead>
-            <tbody>
-              {files.map((file) => (
-                <tr 
-                  key={file.id}
-                  onClick={() => onSelectFile(file)}
-                  className="border-b border-gray-700/50 hover:bg-gray-700/20 cursor-pointer transition-colors"
-                >
-                  <td className="py-3 px-4 text-sm">
-                    <div className="flex items-center">
-                      <span className="text-white">{file.name}</span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-4 text-sm text-gray-300">
-                    {new Date(file.timestamp).toLocaleTimeString()}
-                  </td>
-                  <td className="py-3 px-4">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      file.status === 'success' 
-                        ? 'bg-green-100/10 text-green-400' 
-                        : 'bg-red-100/10 text-red-400'
-                    }`}>
-                      {file.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-sm">
-                    {file.findings > 0 ? (
-                      <span className="text-red-400">{file.findings} found</span>
-                    ) : (
-                      <span className="text-green-400">None</span>
-                    )}
-                  </td>
+        <>
+          <div className="overflow-x-auto">
+            <table className="min-w-full">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">File Name</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Upload Time</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Size</th>
+                  <th className="text-left py-3 px-4 text-sm font-medium text-gray-400">Findings</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {documents.documents.map((doc) => (
+                  <tr 
+                    key={doc.document_id}
+                    className="border-b border-gray-700/50 hover:bg-gray-700/20 cursor-pointer transition-colors"
+                  >
+                    <td className="py-3 px-4 text-sm">
+                      <div className="flex items-center">
+                        <span className="text-white">{doc.filename}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 text-sm text-gray-300">
+                      {new Date(doc.upload_timestamp).toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-sm text-gray-300">
+                      {(doc.content_length / 1024).toFixed(1)} KB
+                    </td>
+                    <td className="py-3 px-4 text-sm">
+                      {doc.sensitive_info_count > 0 ? (
+                        <div className="space-y-1">
+                          <div className="text-red-400">
+                            {doc.sensitive_info_count} total
+                          </div>
+                          {doc.email_count > 0 && (
+                            <div className="text-xs text-gray-400">
+                              Emails: {doc.email_count}
+                            </div>
+                          )}
+                          {doc.ssn_count > 0 && (
+                            <div className="text-xs text-gray-400">
+                              SSNs: {doc.ssn_count}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-green-400">None</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="mt-6 flex items-center justify-between">
+              <div className="flex items-center space-x-4">
+                <span className="text-sm text-gray-400">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => handlePageSizeChange(Number(e.target.value))}
+                  className="bg-gray-700 border border-gray-600 text-white text-sm rounded px-2 py-1"
+                >
+                  <option value={5}>5 per page</option>
+                  <option value={10}>10 per page</option>
+                  <option value={25}>25 per page</option>
+                  <option value={50}>50 per page</option>
+                </select>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => handlePageChange(1)}
+                  disabled={currentPage === 1}
+                  className={`px-3 py-1 text-sm rounded ${
+                    currentPage === 1
+                      ? 'text-gray-500 cursor-not-allowed'
+                      : 'text-indigo-400 hover:text-indigo-300'
+                  }`}
+                >
+                  First
+                </button>
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className={`px-3 py-1 text-sm rounded ${
+                    currentPage === 1
+                      ? 'text-gray-500 cursor-not-allowed'
+                      : 'text-indigo-400 hover:text-indigo-300'
+                  }`}
+                >
+                  Previous
+                </button>
+
+                {/* Page Numbers */}
+                <div className="flex items-center space-x-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => handlePageChange(pageNum)}
+                        className={`px-3 py-1 text-sm rounded ${
+                          currentPage === pageNum
+                            ? 'bg-indigo-600 text-white'
+                            : 'text-indigo-400 hover:text-indigo-300'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === totalPages}
+                  className={`px-3 py-1 text-sm rounded ${
+                    currentPage === totalPages
+                      ? 'text-gray-500 cursor-not-allowed'
+                      : 'text-indigo-400 hover:text-indigo-300'
+                  }`}
+                >
+                  Next
+                </button>
+                <button
+                  onClick={() => handlePageChange(totalPages)}
+                  disabled={currentPage === totalPages}
+                  className={`px-3 py-1 text-sm rounded ${
+                    currentPage === totalPages
+                      ? 'text-gray-500 cursor-not-allowed'
+                      : 'text-indigo-400 hover:text-indigo-300'
+                  }`}
+                >
+                  Last
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
