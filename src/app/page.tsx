@@ -240,44 +240,190 @@ function ProcessedFilesTable({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
+  const [pageSize, setPageSize] = useState(5);
+  
+  // Local pagination state - only keep 100 documents in memory
+  const [localDocuments, setLocalDocuments] = useState<Document[]>([]);
+  const [currentChunk, setCurrentChunk] = useState(0);
+  const [hasMoreDocuments, setHasMoreDocuments] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     fetchDocuments();
-  }, [currentPage, pageSize]);
+  }, [currentChunk]);
 
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (chunkOffset = 0) => {
     try {
       setLoading(true);
       setError(null);
-      const offset = (currentPage - 1) * pageSize;
-      const response = await fetch(`/api/documents?offset=${offset}&limit=${pageSize}`);
+      
+      // Fetch 100 documents at a time
+      const response = await fetch(`/api/documents?offset=${chunkOffset}&limit=100`);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
       const data = await response.json();
+      
+      // Always replace local documents with new chunk
+      setLocalDocuments(data.documents || []);
       setDocuments(data);
+      setCurrentChunk(chunkOffset / 100);
+      
+      // Check if there are more documents to load
+      setHasMoreDocuments((data.documents || []).length === 100);
+      
     } catch (err) {
       console.error('Error fetching documents:', err);
       setError('Failed to fetch documents. Please try again.');
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
-  const totalPages = documents ? Math.ceil(documents.total / pageSize) : 0;
-  const startItem = documents ? (currentPage - 1) * pageSize + 1 : 0;
-  const endItem = documents ? Math.min(currentPage * pageSize, documents.total) : 0;
+  // Calculate pagination based on local documents
+  const totalDocuments = localDocuments.length;
+  const totalPages = Math.ceil(totalDocuments / pageSize);
+  const startItem = totalDocuments > 0 ? (currentPage - 1) * pageSize + 1 : 0;
+  const endItem = Math.min(currentPage * pageSize, totalDocuments);
+
+  // Get current page documents from local documents
+  const currentPageDocuments = localDocuments.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
 
   const handlePageChange = (page: number) => {
-    setCurrentPage(page);
+    if (page >= 1 && page <= totalPages) {
+      setCurrentPage(page);
+      
+      // If we're at the end of local pagination and there are more documents, fetch next chunk
+      if (page === totalPages && hasMoreDocuments && !loadingMore) {
+        const nextChunkOffset = (currentChunk + 1) * 100;
+        setLoadingMore(true);
+        fetchDocuments(nextChunkOffset);
+        setCurrentPage(1); // Reset to first page of new chunk
+      }
+    }
+  };
+
+  const handleLastPage = async () => {
+    if (loadingMore) return;
+    
+    setLoadingMore(true);
+    
+    try {
+      // Simple approach: Calculate the offset for the last pageSize records
+      // We'll use a large offset and work backwards if needed
+      
+      let offset = 1000; // Start with a reasonable large offset
+      let lastPageDocuments: Document[] = [];
+      
+      // Try to find the last page by checking if we get fewer documents than pageSize
+      while (offset >= 0) {
+        const response = await fetch(`/api/documents?offset=${offset}&limit=${pageSize}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        const documents = data.documents || [];
+        
+        if (documents.length === 0) {
+          // We've gone too far back, stop
+          break;
+        } else if (documents.length < pageSize) {
+          // This is the last page
+          lastPageDocuments = documents;
+          break;
+        } else {
+          // We got a full page, try a larger offset
+          offset += 100;
+        }
+      }
+      
+      if (lastPageDocuments.length === 0) {
+        // If we didn't find the end, use the current chunk's last pageSize records
+        const lastPageOffset = Math.max(0, (currentChunk + 1) * 100 - pageSize);
+        const response = await fetch(`/api/documents?offset=${lastPageOffset}&limit=${pageSize}`);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        lastPageDocuments = data.documents || [];
+        offset = lastPageOffset;
+      }
+      
+      // Update the state with the last page documents
+      setLocalDocuments(lastPageDocuments);
+      setCurrentPage(1);
+      setCurrentChunk(Math.floor(offset / 100));
+      
+    } catch (err) {
+      console.error('Error fetching last page:', err);
+      setError('Failed to fetch last page. Please try again.');
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
   const handlePageSizeChange = (newPageSize: number) => {
     setPageSize(newPageSize);
     setCurrentPage(1); // Reset to first page when changing page size
+  };
+
+  // Keyboard navigation
+  const handleKeyDown = (e: React.KeyboardEvent, action: () => void) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      action();
+    }
+  };
+
+  // Generate page numbers with ellipsis - renamed to show chunk context
+  const getPageNumbers = () => {
+    const pages = [];
+    const maxVisiblePages = 5;
+    
+    if (totalPages <= maxVisiblePages) {
+      // Show all pages if total is small
+      for (let i = 1; i <= totalPages; i++) {
+        pages.push(i);
+      }
+    } else {
+      // Show pages with ellipsis
+      if (currentPage <= 3) {
+        // Near the beginning
+        for (let i = 1; i <= 4; i++) {
+          pages.push(i);
+        }
+        pages.push('...');
+        pages.push(totalPages);
+      } else if (currentPage >= totalPages - 2) {
+        // Near the end
+        pages.push(1);
+        pages.push('...');
+        for (let i = totalPages - 3; i <= totalPages; i++) {
+          pages.push(i);
+        }
+      } else {
+        // In the middle
+        pages.push(1);
+        pages.push('...');
+        for (let i = currentPage - 1; i <= currentPage + 1; i++) {
+          pages.push(i);
+        }
+        pages.push('...');
+        pages.push(totalPages);
+      }
+    }
+    
+    return pages;
   };
 
   if (loading) {
@@ -300,8 +446,8 @@ function ProcessedFilesTable({
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white">Processed Documents</h2>
           <button
-            onClick={fetchDocuments}
-            className="text-indigo-400 hover:text-indigo-300 text-sm"
+            onClick={() => fetchDocuments()}
+            className="text-indigo-400 hover:text-indigo-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 rounded"
           >
             Refresh
           </button>
@@ -319,22 +465,23 @@ function ProcessedFilesTable({
         <h2 className="text-lg font-semibold text-white">Processed Documents</h2>
         <div className="flex items-center space-x-3">
           <span className="text-sm text-gray-400">
-            {documents && documents.total > 0 ? (
-              `Showing ${startItem}-${endItem} of ${documents.total}`
+            {totalDocuments > 0 ? (
+              `Showing ${startItem}-${endItem} of ${totalDocuments}${hasMoreDocuments ? '+' : ''} (Chunk ${currentChunk + 1})`
             ) : (
-              `Total: ${documents?.total || 0}`
+              `Total: ${totalDocuments}`
             )}
           </span>
           <button
-            onClick={fetchDocuments}
-            className="text-indigo-400 hover:text-indigo-300 text-sm"
+            onClick={() => fetchDocuments()}
+            className="text-indigo-400 hover:text-indigo-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 rounded"
+            aria-label="Refresh documents"
           >
             Refresh
           </button>
         </div>
       </div>
       
-      {!documents || documents.documents.length === 0 ? (
+      {totalDocuments === 0 ? (
         <div className="text-center py-8 text-gray-400">
           No documents found
         </div>
@@ -351,10 +498,34 @@ function ProcessedFilesTable({
                 </tr>
               </thead>
               <tbody>
-                {documents.documents.map((doc) => (
+                {currentPageDocuments.map((doc) => (
                   <tr 
                     key={doc.document_id}
                     className="border-b border-gray-700/50 hover:bg-gray-700/20 cursor-pointer transition-colors"
+                    onClick={() => onSelectFile({
+                      id: doc.document_id,
+                      name: doc.filename,
+                      timestamp: doc.upload_timestamp,
+                      status: 'success',
+                      findings: doc.sensitive_info_count,
+                      documentId: doc.document_id
+                    })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onSelectFile({
+                          id: doc.document_id,
+                          name: doc.filename,
+                          timestamp: doc.upload_timestamp,
+                          status: 'success',
+                          findings: doc.sensitive_info_count,
+                          documentId: doc.document_id
+                        });
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Select document ${doc.filename}`}
                   >
                     <td className="py-3 px-4 text-sm">
                       <div className="flex items-center">
@@ -394,17 +565,18 @@ function ProcessedFilesTable({
             </table>
           </div>
 
-          {/* Pagination Controls */}
-          {totalPages > 1 && (
-            <div className="mt-6 flex items-center justify-between">
+          {/* Modern Icon-Based Pagination Controls - Only show when there are multiple pages */}
+          {totalDocuments > 0 && totalPages > 1 && (
+            <div className="mt-6 flex flex-col sm:flex-row items-center justify-between space-y-4 sm:space-y-0">
               <div className="flex items-center space-x-4">
                 <span className="text-sm text-gray-400">
-                  Page {currentPage} of {totalPages}
+                  Page {currentPage} of {totalPages} (Chunk {currentChunk + 1})
                 </span>
                 <select
                   value={pageSize}
                   onChange={(e) => handlePageSizeChange(Number(e.target.value))}
-                  className="bg-gray-700 border border-gray-600 text-white text-sm rounded px-2 py-1"
+                  className="bg-gray-700 border border-gray-600 text-white text-sm rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  aria-label="Items per page"
                 >
                   <option value={5}>5 per page</option>
                   <option value={10}>10 per page</option>
@@ -414,80 +586,99 @@ function ProcessedFilesTable({
               </div>
 
               <div className="flex items-center space-x-2">
+                {/* First Page Button */}
                 <button
                   onClick={() => handlePageChange(1)}
                   disabled={currentPage === 1}
-                  className={`px-3 py-1 text-sm rounded ${
+                  onKeyDown={(e) => handleKeyDown(e, () => handlePageChange(1))}
+                  className={`p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 ${
                     currentPage === 1
-                      ? 'text-gray-500 cursor-not-allowed'
-                      : 'text-indigo-400 hover:text-indigo-300'
+                      ? 'text-gray-500 cursor-not-allowed opacity-50 bg-gray-700/50'
+                      : 'text-white hover:text-indigo-300 hover:bg-indigo-500/20 hover:scale-105 bg-gray-700/50 hover:bg-gray-600/50'
                   }`}
+                  aria-label="Go to first page"
+                  title="First page"
                 >
-                  First
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                  </svg>
                 </button>
+
+                {/* Previous Page Button */}
                 <button
                   onClick={() => handlePageChange(currentPage - 1)}
                   disabled={currentPage === 1}
-                  className={`px-3 py-1 text-sm rounded ${
+                  onKeyDown={(e) => handleKeyDown(e, () => handlePageChange(currentPage - 1))}
+                  className={`p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 ${
                     currentPage === 1
-                      ? 'text-gray-500 cursor-not-allowed'
-                      : 'text-indigo-400 hover:text-indigo-300'
+                      ? 'text-gray-500 cursor-not-allowed opacity-50 bg-gray-700/50'
+                      : 'text-white hover:text-indigo-300 hover:bg-indigo-500/20 hover:scale-105 bg-gray-700/50 hover:bg-gray-600/50'
                   }`}
+                  aria-label="Go to previous page"
+                  title="Previous page"
                 >
-                  Previous
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
                 </button>
 
                 {/* Page Numbers */}
                 <div className="flex items-center space-x-1">
-                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                    let pageNum;
-                    if (totalPages <= 5) {
-                      pageNum = i + 1;
-                    } else if (currentPage <= 3) {
-                      pageNum = i + 1;
-                    } else if (currentPage >= totalPages - 2) {
-                      pageNum = totalPages - 4 + i;
-                    } else {
-                      pageNum = currentPage - 2 + i;
-                    }
-
-                    return (
-                      <button
-                        key={pageNum}
-                        onClick={() => handlePageChange(pageNum)}
-                        className={`px-3 py-1 text-sm rounded ${
-                          currentPage === pageNum
-                            ? 'bg-indigo-600 text-white'
-                            : 'text-indigo-400 hover:text-indigo-300'
-                        }`}
-                      >
-                        {pageNum}
-                      </button>
-                    );
-                  })}
+                  {getPageNumbers().map((pageNum, index) => (
+                    <button
+                      key={index}
+                      onClick={() => typeof pageNum === 'number' && handlePageChange(pageNum)}
+                      disabled={pageNum === '...'}
+                      onKeyDown={(e) => typeof pageNum === 'number' && handleKeyDown(e, () => handlePageChange(pageNum))}
+                      className={`px-3 py-2 text-sm rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 ${
+                        pageNum === '...'
+                          ? 'text-gray-500 cursor-default'
+                          : pageNum === currentPage
+                          ? 'bg-indigo-600 text-white shadow-lg scale-105'
+                          : 'text-white hover:text-indigo-300 hover:bg-indigo-500/20 hover:scale-105 bg-gray-700/50 hover:bg-gray-600/50'
+                      }`}
+                      aria-label={pageNum === '...' ? 'More pages' : `Go to page ${pageNum}`}
+                      aria-current={pageNum === currentPage ? 'page' : undefined}
+                    >
+                      {pageNum}
+                    </button>
+                  ))}
                 </div>
 
+                {/* Next Page Button */}
                 <button
                   onClick={() => handlePageChange(currentPage + 1)}
                   disabled={currentPage === totalPages}
-                  className={`px-3 py-1 text-sm rounded ${
+                  onKeyDown={(e) => handleKeyDown(e, () => handlePageChange(currentPage + 1))}
+                  className={`p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 ${
                     currentPage === totalPages
-                      ? 'text-gray-500 cursor-not-allowed'
-                      : 'text-indigo-400 hover:text-indigo-300'
+                      ? 'text-gray-500 cursor-not-allowed opacity-50 bg-gray-700/50'
+                      : 'text-white hover:text-indigo-300 hover:bg-indigo-500/20 hover:scale-105 bg-gray-700/50 hover:bg-gray-600/50'
                   }`}
+                  aria-label="Go to next page"
+                  title="Next page"
                 >
-                  Next
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
                 </button>
+
+                {/* Last Page Button */}
                 <button
-                  onClick={() => handlePageChange(totalPages)}
-                  disabled={currentPage === totalPages}
-                  className={`px-3 py-1 text-sm rounded ${
-                    currentPage === totalPages
-                      ? 'text-gray-500 cursor-not-allowed'
-                      : 'text-indigo-400 hover:text-indigo-300'
+                  onClick={handleLastPage}
+                  disabled={currentPage === totalPages || loadingMore}
+                  onKeyDown={(e) => handleKeyDown(e, handleLastPage)}
+                  className={`p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-all duration-200 ${
+                    currentPage === totalPages || loadingMore
+                      ? 'text-gray-500 cursor-not-allowed opacity-50 bg-gray-700/50'
+                      : 'text-white hover:text-indigo-300 hover:bg-indigo-500/20 hover:scale-105 bg-gray-700/50 hover:bg-gray-600/50'
                   }`}
+                  aria-label="Go to last page"
+                  title="Last page"
                 >
-                  Last
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                  </svg>
                 </button>
               </div>
             </div>
